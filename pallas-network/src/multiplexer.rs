@@ -349,7 +349,7 @@ impl Plexer {
         self.egress
             .0
             .send((protocol, payload))
-            .map_err(|err| Error::PlexerDemux(err.0 .0, err.0 .1))?;
+            .map_err(|err| Error::PlexerDemux(err.0.0, err.0.1))?;
 
         Ok(())
     }
@@ -367,9 +367,11 @@ impl Plexer {
             trace!("selecting");
             select! {
                 res = self.bearer.read_segment() => {
-                    let x = res?;
-                    trace!("demux selected");
-                    self.demux(x.0, x.1).await?
+                    if let Ok(x) = res {
+                        trace!("demux selected");
+                        self.demux(x.0, x.1).await?
+                    }
+                    trace!("smth wrong");
                 },
                 Some(x) = self.ingress.1.recv() => {
                     trace!("mux selected");
@@ -390,8 +392,8 @@ impl Plexer {
 pub const MAX_SEGMENT_PAYLOAD_LENGTH: usize = 65535;
 
 fn try_decode_message<M>(buffer: &mut Vec<u8>) -> Result<Option<M>, Error>
-where
-    M: Fragment,
+    where
+        M: Fragment,
 {
     let mut decoder = minicbor::Decoder::new(buffer);
     let maybe_msg = decoder.decode();
@@ -427,8 +429,8 @@ impl ChannelBuffer {
 
     /// Enqueues a msg as a sequence payload chunks
     pub async fn send_msg_chunks<M>(&mut self, msg: &M) -> Result<(), Error>
-    where
-        M: Fragment,
+        where
+            M: Fragment,
     {
         let mut payload = Vec::new();
         minicbor::encode(msg, &mut payload).map_err(|err| Error::Encoding(err.to_string()))?;
@@ -444,8 +446,8 @@ impl ChannelBuffer {
 
     /// Reads from the channel until a complete message is found
     pub async fn recv_full_msg<M>(&mut self) -> Result<M, Error>
-    where
-        M: Fragment,
+        where
+            M: Fragment,
     {
         trace!(len = self.temp.len(), "waiting for full message");
 
