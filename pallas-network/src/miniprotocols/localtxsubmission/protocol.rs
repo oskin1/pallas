@@ -17,4 +17,7 @@ pub enum Message<Tx, Reject> {
 
 pub type Tx = Vec<u8>;
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct EraTx(pub u16, pub Vec<u8>);
+
 pub type RejectReason = Int;

@@ -5,11 +5,11 @@ use tracing::debug;
 
 use pallas_codec::Fragment;
 
-use crate::miniprotocols::localtxsubmission::{Tx, Message, RejectReason, State};
+use crate::miniprotocols::localtxsubmission::{Message, RejectReason, State, EraTx};
 use crate::multiplexer;
 
 /// Cardano specific instantiation of LocalTxSubmission client.
-pub type Client = GenericClient<Tx, RejectReason>;
+pub type Client = GenericClient<EraTx, RejectReason>;
 
 /// A generic Ouroboros client for submitting a generic transaction
 /// to a server, which possibly results in a generic rejection.
@@ -21,8 +21,8 @@ pub struct GenericClient<Tx, Reject> {
 }
 
 impl<Tx, Reject> GenericClient<Tx, Reject>
-where
-    Message<Tx, Reject>: Fragment,
+    where
+        Message<Tx, Reject>: Fragment,
 {
     /// Constructs a new LocalTxSubmission `Client` instance.
     ///
