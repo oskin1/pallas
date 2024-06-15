@@ -21,6 +21,7 @@ socket2 = "0.5.5"
 thiserror = "1.0.31"
 tokio = { version = "1", features = ["rt", "net", "io-util", "time", "sync", "macros"] }
 tracing = "0.1.37"
+log = "0.4.17"
 
 [dev-dependencies]
 tracing-subscriber = "0.3.16"

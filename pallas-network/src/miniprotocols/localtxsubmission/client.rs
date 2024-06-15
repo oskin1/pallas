@@ -2,6 +2,7 @@ use std::marker::PhantomData;
 
 use thiserror::Error;
 use tracing::debug;
+use log::{trace, warn};
 
 use pallas_codec::Fragment;
 
@@ -159,6 +160,7 @@ where
         let msg = Message::SubmitTx(tx);
         self.send_message(&msg).await?;
         self.state = State::Busy;
+        trace!(target: "pallas", "LocalTxSubmit: {:?} => State::Busy", self.state);
 
         debug!("sent SubmitTx");
 
@@ -175,13 +177,18 @@ where
         match self.recv_message().await? {
             Message::AcceptTx => {
                 self.state = State::Idle;
+                trace!(target: "pallas", "LocalTxSubmit: {:?} => State::Idle", self.state);
                 Ok(())
             }
             Message::RejectTx(rejection) => {
                 self.state = State::Idle;
+                trace!(target: "pallas", "LocalTxSubmit: {:?} => State::Idle", self.state);
                 Err(Error::TxRejected(rejection))
             }
-            _ => Err(Error::InvalidInbound),
+            _ => {
+                warn!(target: "pallas", "Error::InvalidInbound");
+                Err(Error::InvalidInbound)
+            },
         }
     }
 }
