@@ -65,6 +65,12 @@ where
         Ok(())
     }
 
+    pub fn unsafe_reset(&mut self) {
+        trace!(target: "pallas", "LocalTxSubmit: {:?} => State::Idle", self.state);
+        self.state = State::Idle;
+        self.muxer.flush();
+    }
+
     /// Returns the current state of the client.
     fn state(&self) -> &State {
         &self.state
@@ -124,7 +130,7 @@ where
         self.muxer
             .send_msg_chunks(msg)
             .await
-            .map_err(Error::ChannelError)?;
+            .map_err(Error::OutboundChannelError)?;
 
         Ok(())
     }
@@ -141,7 +147,7 @@ where
             .muxer
             .recv_full_msg()
             .await
-            .map_err(Error::ChannelError)?;
+            .map_err(Error::InboundChannelError)?;
 
         self.assert_inbound_state(&msg)?;
 
@@ -159,8 +165,8 @@ where
     async fn send_submit_tx(&mut self, tx: Tx) -> Result<(), Error<Reject>> {
         let msg = Message::SubmitTx(tx);
         self.send_message(&msg).await?;
-        self.state = State::Busy;
         trace!(target: "pallas", "LocalTxSubmit: {:?} => State::Busy", self.state);
+        self.state = State::Busy;
 
         debug!("sent SubmitTx");
 
@@ -176,13 +182,13 @@ where
 
         match self.recv_message().await? {
             Message::AcceptTx => {
-                self.state = State::Idle;
                 trace!(target: "pallas", "LocalTxSubmit: {:?} => State::Idle", self.state);
+                self.state = State::Idle;
                 Ok(())
             }
             Message::RejectTx(rejection) => {
-                self.state = State::Idle;
                 trace!(target: "pallas", "LocalTxSubmit: {:?} => State::Idle", self.state);
+                self.state = State::Idle;
                 Err(Error::TxRejected(rejection))
             }
             _ => {
@@ -207,8 +213,11 @@ pub enum Error<Reject> {
     #[error("outbound message is not valid for current state")]
     InvalidOutbound,
 
-    #[error("error while sending or receiving data through the channel")]
-    ChannelError(multiplexer::Error),
+    #[error("error while sending data through the channel")]
+    OutboundChannelError(multiplexer::Error),
+
+    #[error("error while receiving data through the channel")]
+    InboundChannelError(multiplexer::Error),
 
     #[error("tx was rejected by the server")]
     TxRejected(Reject),

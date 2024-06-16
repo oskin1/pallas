@@ -1,28 +1,26 @@
 //! A multiplexer of several mini-protocols through a single bearer
 
 use std::collections::HashMap;
+use std::io::Write;
 
 use byteorder::{ByteOrder, NetworkEndian};
-use pallas_codec::{minicbor, Fragment};
 use thiserror::Error;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::task::JoinHandle;
-use tokio::time::Instant;
 use tokio::{select, sync::mpsc::error::SendError};
-use tracing::{debug, error, trace, warn};
-
-type IOResult<T> = tokio::io::Result<T>;
-
-use tokio::net as tcp;
-
-#[cfg(unix)]
-use tokio::net as unix;
-
-#[cfg(windows)]
-use tokio::net::windows::named_pipe::NamedPipeClient;
-
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[cfg(windows)]
 use tokio::io::{ReadHalf, WriteHalf};
+use tokio::net as tcp;
+#[cfg(unix)]
+use tokio::net as unix;
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::NamedPipeClient;
+use tokio::task::JoinHandle;
+use tokio::time::Instant;
+use tracing::{debug, error, trace, warn};
+
+use pallas_codec::{Fragment, minicbor};
+
+type IOResult<T> = tokio::io::Result<T>;
 
 const HEADER_LEN: usize = 8;
 
@@ -367,11 +365,11 @@ impl Muxer {
     }
 
     pub fn clone_sender(&self) -> tokio::sync::mpsc::Sender<(Protocol, Payload)> {
-        self.2 .0.clone()
+        self.2.0.clone()
     }
 
     pub async fn tick(&mut self) -> Result<(), Error> {
-        let msg = self.2 .1.recv().await;
+        let msg = self.2.1.recv().await;
 
         if let Some(x) = msg {
             trace!(protocol = x.0, "mux happening");
@@ -490,8 +488,8 @@ impl Plexer {
 pub const MAX_SEGMENT_PAYLOAD_LENGTH: usize = 65535;
 
 fn try_decode_message<M>(buffer: &mut Vec<u8>) -> Result<Option<M>, Error>
-where
-    M: Fragment,
+    where
+        M: Fragment,
 {
     let mut decoder = minicbor::Decoder::new(buffer);
     let maybe_msg = decoder.decode();
@@ -504,7 +502,7 @@ where
         }
         Err(err) if err.is_end_of_input() => Ok(None),
         Err(err) => {
-            error!(?err);
+            error!(?err, "{}", hex::encode(buffer));
             trace!("{}", hex::encode(buffer));
             Err(Error::Decoding(err.to_string()))
         }
@@ -525,10 +523,14 @@ impl ChannelBuffer {
         }
     }
 
+    pub fn flush(&mut self) {
+        self.temp = vec![];
+    }
+
     /// Enqueues a msg as a sequence payload chunks
     pub async fn send_msg_chunks<M>(&mut self, msg: &M) -> Result<(), Error>
-    where
-        M: Fragment,
+        where
+            M: Fragment,
     {
         let mut payload = Vec::new();
         minicbor::encode(msg, &mut payload).map_err(|err| Error::Encoding(err.to_string()))?;
@@ -544,8 +546,8 @@ impl ChannelBuffer {
 
     /// Reads from the channel until a complete message is found
     pub async fn recv_full_msg<M>(&mut self) -> Result<M, Error>
-    where
-        M: Fragment,
+        where
+            M: Fragment,
     {
         trace!(len = self.temp.len(), "waiting for full message");
 
@@ -584,8 +586,9 @@ impl From<AgentChannel> for ChannelBuffer {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use pallas_codec::minicbor;
+
+    use super::*;
 
     #[tokio::test]
     async fn multiple_messages_in_same_payload() {
