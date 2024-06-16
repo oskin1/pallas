@@ -503,7 +503,6 @@ fn try_decode_message<M>(buffer: &mut Vec<u8>) -> Result<Option<M>, Error>
         Err(err) if err.is_end_of_input() => Ok(None),
         Err(err) => {
             error!(?err, "{}", hex::encode(buffer));
-            trace!("{}", hex::encode(buffer));
             Err(Error::Decoding(err.to_string()))
         }
     }
