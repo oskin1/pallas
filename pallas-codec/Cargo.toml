@@ -14,8 +14,6 @@ authors = [
   "Kasey White <kwhitemsg@gmail.com>",
 ]
 
-[features]
-default = []
 
 [dependencies]
 hex = "0.4.3"
@@ -23,6 +21,10 @@ minicbor = { version = "0.20", features = ["std", "half", "derive"] }
 num-bigint = { version = "0.4.4", optional = true }
 serde = { version = "1.0.143", features = ["derive"] }
 thiserror = "1.0.39"
+
+[features]
+default = []
+half = ["minicbor/half"]
 
 [dev-dependencies]
 proptest = "1.1.0"
