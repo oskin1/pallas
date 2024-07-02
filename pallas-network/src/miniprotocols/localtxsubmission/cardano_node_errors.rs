@@ -415,20 +415,46 @@ fn next_token<'a>(decoder: &'a mut Decoder) -> Result<Token<'a>, Error> {
 
 #[cfg(test)]
 mod tests {
-    use pallas_codec::minicbor::{Decode, Decoder};
-
-    use super::{
-        AlonzoUtxoPredFailure, BabbageUtxoPredFailure, BabbageUtxowPredFailure,
-        ShelleyLedgerPredFailure, TxApplyErrors,
+    use pallas_codec::minicbor::{
+        encode::{write::EndOfSlice, Error},
+        Decode, Decoder, Encoder,
     };
 
-    #[test]
-    fn test_decode_badinputs() {
-        let hex_str = "8200820282018200838258200faddf00919ef15d38ac07684199e69be95a003a15f757bf77701072b050c1f5008258205f85cf7db4713466bc8d9d32a84b5b6bfd2f34a76b5f8cf5a5cb04b4d6d6f0380082582096eb39b8d909373c8275c611fae63792f5e3d0a67c1eee5b3afb91fdcddc859100";
-        let bytes = hex::decode(hex_str).unwrap();
+    use super::TxApplyErrors;
 
-        let mut decoder = Decoder::new(&bytes);
-        let a = ShelleyLedgerPredFailure::decode(&mut decoder, &mut vec![]).unwrap();
+    #[test]
+    fn test_decode_malformed_error() {
+        let buffer = encode_trace().unwrap();
+        let mut decoder = Decoder::new(&buffer);
+        let a = TxApplyErrors::decode(&mut decoder, &mut vec![]).unwrap();
+        dbg!(&a);
+        assert!(a.non_script_errors.is_empty());
+    }
+
+    fn encode_trace() -> Result<[u8; 1280], Error<EndOfSlice>> {
+        let mut buffer = [0u8; 1280];
+        let mut encoder = Encoder::new(&mut buffer[..]);
+
+        let _e = encoder
+            .array(2)?
+            .u8(2)?
+            .array(1)?
+            .array(2)?
+            .u8(5)?
+            .begin_array()?
+            // Encode ledger errors
+            .array(2)?
+            .u8(0)? // Tag for BabbageUtxowPredFailure
+            .array(2)?
+            .u8(2)? // Tag for BabbageUtxoPredFailure
+            .array(2)?
+            .u8(1)? // Tag for AlonzoUtxoPredFailure
+            .array(2)?
+            .u8(100)? // Unsupported Tag
+            .u8(200)? // dummy value
+            .end()?;
+
+        Ok(buffer)
     }
 
     #[test]
