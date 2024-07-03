@@ -17,7 +17,7 @@ pub struct TxApplyErrors {
 impl Decode<'_, C> for TxApplyErrors {
     fn decode(d: &mut Decoder, ctx: &mut C) -> Result<Self, Error> {
         let mut non_script_errors = vec![];
-        expect_definite_array(2, d, ctx)?;
+        expect_definite_array(vec![2], d, ctx)?;
         let tag = expect_u8(d, ctx)?;
         assert_eq!(tag, 2);
         if let Some(n) = d.array()? {
@@ -58,7 +58,7 @@ pub enum ShelleyLedgerPredFailure {
 
 impl Decode<'_, C> for ShelleyLedgerPredFailure {
     fn decode(d: &mut Decoder, ctx: &mut C) -> Result<Self, Error> {
-        if let Err(_e) = expect_definite_array(2, d, ctx) {
+        if let Err(_e) = expect_definite_array(vec![2], d, ctx) {
             clear_unknown_entity(d, ctx)?;
         }
         if let Ok(tag) = expect_u8(d, ctx) {
@@ -107,7 +107,7 @@ pub enum BabbageUtxowPredFailure {
 
 impl Decode<'_, C> for BabbageUtxowPredFailure {
     fn decode(d: &mut Decoder, ctx: &mut C) -> Result<Self, Error> {
-        expect_definite_array(2, d, ctx)?;
+        expect_definite_array(vec![2], d, ctx)?;
         if let Ok(tag) = expect_u8(d, ctx) {
             match tag {
                 2 => {
@@ -135,7 +135,7 @@ pub enum BabbageUtxoPredFailure {
 
 impl Decode<'_, C> for BabbageUtxoPredFailure {
     fn decode(d: &mut Decoder, ctx: &mut C) -> Result<Self, Error> {
-        expect_definite_array(2, d, ctx)?;
+        expect_definite_array(vec![2], d, ctx)?;
         if let Ok(tag) = expect_u8(d, ctx) {
             match tag {
                 1 => {
@@ -182,10 +182,10 @@ pub enum AlonzoUtxoPredFailure {
 
 impl Decode<'_, C> for AlonzoUtxoPredFailure {
     fn decode(d: &mut Decoder, ctx: &mut C) -> Result<Self, Error> {
-        expect_definite_array(2, d, ctx)?;
+        let arr_len = expect_definite_array(vec![2, 3], d, ctx)?;
         if let Ok(tag) = expect_u8(d, ctx) {
             match tag {
-                0 => {
+                0 if arr_len == 2 => {
                     // BadInputsUtxo
                     if let Some(num_bad_inputs) = d.array()? {
                         let mut bad_inputs = vec![];
@@ -229,7 +229,7 @@ struct TxInput {
 
 impl Decode<'_, C> for TxInput {
     fn decode(d: &mut Decoder, ctx: &mut C) -> Result<Self, Error> {
-        expect_definite_array(2, d, ctx)?;
+        expect_definite_array(vec![2], d, ctx)?;
         if let Ok(bytes) = d.probe().bytes() {
             let _ = d.bytes()?;
             let tx_hash = TxHash::from(bytes);
@@ -274,21 +274,25 @@ fn add_collection_token_to_context(d: &mut Decoder, ctx: &mut C) -> Result<(), E
     Ok(())
 }
 
-fn expect_definite_array(n: u64, d: &mut Decoder, ctx: &mut C) -> Result<(), Error> {
+fn expect_definite_array(
+    possible_lengths: Vec<u64>,
+    d: &mut Decoder,
+    ctx: &mut C,
+) -> Result<u64, Error> {
     if let Some(len) = d.probe().array()? {
-        if let Some(E::Definite(n)) = ctx.pop() {
-            if n > 1 {
-                ctx.push(E::Definite(n - 1));
+        if let Some(E::Definite(inner_n)) = ctx.pop() {
+            if inner_n > 1 {
+                ctx.push(E::Definite(inner_n - 1));
             }
         }
         ctx.push(E::Definite(len));
         let _ = d.array()?;
-        if n == len {
-            Ok(())
+        if possible_lengths.contains(&len) {
+            Ok(len)
         } else {
             Err(Error::message(format!(
-                "Expected array({}), got array({})",
-                n, len
+                "Expected array({:?}), got array({})",
+                possible_lengths, len
             )))
         }
     } else {
@@ -310,8 +314,8 @@ fn expect_definite_array(n: u64, d: &mut Decoder, ctx: &mut C) -> Result<(), Err
             _ => (),
         }
         Err(Error::message(format!(
-            "Expected array({}), got indefinite array",
-            n
+            "Expected array({:?}), got indefinite array",
+            possible_lengths,
         )))
     }
 }
