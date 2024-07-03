@@ -481,7 +481,13 @@ mod tests {
             .u8(1)? // Tag for AlonzoUtxoPredFailure
             .array(2)?
             .u8(100)? // Unsupported Tag
-            .u8(200)? // dummy value
+            .array(1)? // dummy value
+            .array(1)? // dummy value
+            .array(1)? // dummy value
+            .array(1)? // dummy value
+            .array(1)? // dummy value
+            .array(1)? // dummy value
+            .u8(200)?
             .end()?;
 
         Ok(buffer)
