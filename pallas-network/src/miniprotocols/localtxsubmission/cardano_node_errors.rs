@@ -18,7 +18,7 @@ impl Decode<'_, C> for TxApplyErrors {
     fn decode(d: &mut Decoder, ctx: &mut C) -> Result<Self, Error> {
         let mut non_script_errors = vec![];
         expect_definite_array(2, d, ctx)?;
-        let tag = d.u8()?;
+        let tag = expect_u8(d, ctx)?;
         assert_eq!(tag, 2);
         if let Some(n) = d.array()? {
             if n == 1 {
@@ -61,8 +61,7 @@ impl Decode<'_, C> for ShelleyLedgerPredFailure {
         if let Err(_e) = expect_definite_array(2, d, ctx) {
             clear_unknown_entity(d, ctx)?;
         }
-        if let Ok(tag) = d.probe().u8() {
-            let _ = d.u8()?;
+        if let Ok(tag) = expect_u8(d, ctx) {
             match tag {
                 0 => match BabbageUtxowPredFailure::decode(d, ctx) {
                     Ok(utxow_failure) => Ok(ShelleyLedgerPredFailure::UtxowFailure(utxow_failure)),
@@ -109,8 +108,7 @@ pub enum BabbageUtxowPredFailure {
 impl Decode<'_, C> for BabbageUtxowPredFailure {
     fn decode(d: &mut Decoder, ctx: &mut C) -> Result<Self, Error> {
         expect_definite_array(2, d, ctx)?;
-        if let Ok(tag) = d.probe().u8() {
-            let _ = d.u8()?;
+        if let Ok(tag) = expect_u8(d, ctx) {
             match tag {
                 2 => {
                     let utxo_failure = BabbageUtxoPredFailure::decode(d, ctx)?;
@@ -138,8 +136,7 @@ pub enum BabbageUtxoPredFailure {
 impl Decode<'_, C> for BabbageUtxoPredFailure {
     fn decode(d: &mut Decoder, ctx: &mut C) -> Result<Self, Error> {
         expect_definite_array(2, d, ctx)?;
-        if let Ok(tag) = d.probe().u8() {
-            let _ = d.u8()?;
+        if let Ok(tag) = expect_u8(d, ctx) {
             match tag {
                 1 => {
                     let alonzo_failure = AlonzoUtxoPredFailure::decode(d, ctx)?;
@@ -186,8 +183,7 @@ pub enum AlonzoUtxoPredFailure {
 impl Decode<'_, C> for AlonzoUtxoPredFailure {
     fn decode(d: &mut Decoder, ctx: &mut C) -> Result<Self, Error> {
         expect_definite_array(2, d, ctx)?;
-        if let Ok(tag) = d.probe().u8() {
-            let _ = d.u8()?;
+        if let Ok(tag) = expect_u8(d, ctx) {
             match tag {
                 0 => {
                     // BadInputsUtxo
@@ -238,6 +234,11 @@ impl Decode<'_, C> for TxInput {
             let _ = d.bytes()?;
             let tx_hash = TxHash::from(bytes);
             if let Ok(index) = d.probe().int() {
+                if let Some(E::Definite(n)) = ctx.pop() {
+                    if n > 1 {
+                        ctx.push(E::Definite(n - 1));
+                    }
+                }
                 let _ = d.int()?;
                 let index =
                     u64::try_from(index).map_err(|_| Error::message("Can't convert Int to u64"))?;
@@ -254,6 +255,11 @@ impl Decode<'_, C> for TxInput {
 
 fn add_collection_token_to_context(d: &mut Decoder, ctx: &mut C) -> Result<(), Error> {
     let t = next_token(d)?;
+    if let Some(E::Definite(n)) = ctx.pop() {
+        if n > 1 {
+            ctx.push(E::Definite(n - 1));
+        }
+    }
     match t {
         Token::BeginArray | Token::BeginBytes | Token::BeginMap => {
             ctx.push(E::Indefinite);
@@ -270,6 +276,11 @@ fn add_collection_token_to_context(d: &mut Decoder, ctx: &mut C) -> Result<(), E
 
 fn expect_definite_array(n: u64, d: &mut Decoder, ctx: &mut C) -> Result<(), Error> {
     if let Some(len) = d.probe().array()? {
+        if let Some(E::Definite(n)) = ctx.pop() {
+            if n > 1 {
+                ctx.push(E::Definite(n - 1));
+            }
+        }
         ctx.push(E::Definite(len));
         let _ = d.array()?;
         if n == len {
@@ -282,6 +293,11 @@ fn expect_definite_array(n: u64, d: &mut Decoder, ctx: &mut C) -> Result<(), Err
         }
     } else {
         let t = next_token(d)?;
+        if let Some(E::Definite(n)) = ctx.pop() {
+            if n > 1 {
+                ctx.push(E::Definite(n - 1));
+            }
+        }
         match t {
             Token::BeginArray | Token::BeginBytes | Token::BeginMap => {
                 ctx.push(E::Indefinite);
@@ -297,6 +313,20 @@ fn expect_definite_array(n: u64, d: &mut Decoder, ctx: &mut C) -> Result<(), Err
             "Expected array({}), got indefinite array",
             n
         )))
+    }
+}
+
+fn expect_u8(d: &mut Decoder, ctx: &mut C) -> Result<u8, Error> {
+    if let Ok(value) = d.probe().u8() {
+        if let Some(E::Definite(n)) = ctx.pop() {
+            if n > 1 {
+                ctx.push(E::Definite(n - 1));
+            }
+        }
+        let _ = d.u8()?;
+        Ok(value)
+    } else {
+        Err(Error::message("Expected u8"))
     }
 }
 
