@@ -1,6 +1,7 @@
 //! Error types that match their Haskell representation in the Cardano node
 
 use pallas_codec::minicbor::{
+    self,
     data::Type,
     decode::{Error, Token},
     Decode, Decoder,
@@ -162,7 +163,10 @@ pub enum AlonzoUtxoPredFailure {
     MaxTxSizeUTxO,
     InputSetEmptyUTxO,
     FeeTooSmallUTxO,
-    ValueNotConservedUTxO,
+    ValueNotConservedUTxO {
+        consumed_value: pallas_primitives::conway::Value,
+        produced_value: pallas_primitives::conway::Value,
+    },
     WrongNetwork,
     WrongNetworkWithdrawal,
     OutputTooSmallUTxO,
@@ -197,6 +201,17 @@ impl Decode<'_, C> for AlonzoUtxoPredFailure {
                     } else {
                         Err(Error::message("expected array of tx inputs"))
                     }
+                }
+                5 if arr_len == 3 => {
+                    // ValueNotConservedUtxo
+
+                    let consumed_value = decode_conway_value(d, ctx)?;
+                    let produced_value = decode_conway_value(d, ctx)?;
+
+                    Ok(AlonzoUtxoPredFailure::ValueNotConservedUTxO {
+                        consumed_value,
+                        produced_value,
+                    })
                 }
                 _ => Err(Error::message("not AlonzoUtxoPredFailure")),
             }
@@ -320,6 +335,40 @@ fn expect_definite_array(
     }
 }
 
+fn expect_definite_map(d: &mut Decoder, ctx: &mut C) -> Result<u64, Error> {
+    if let Some(len) = d.probe().map()? {
+        if let Some(E::Definite(inner_n)) = ctx.pop() {
+            if inner_n > 1 {
+                ctx.push(E::Definite(inner_n - 1));
+            }
+        }
+        ctx.push(E::Definite(len * 2));
+        let _ = d.map()?;
+        Ok(len)
+    } else {
+        let t = next_token(d)?;
+        if let Some(E::Definite(n)) = ctx.pop() {
+            if n > 1 {
+                ctx.push(E::Definite(n - 1));
+            }
+        }
+        match t {
+            Token::BeginArray | Token::BeginBytes | Token::BeginMap => {
+                ctx.push(E::Indefinite);
+            }
+            Token::Array(n) | Token::Map(n) => {
+                ctx.push(E::Definite(n));
+            }
+
+            // Throw away the token (even break)
+            _ => (),
+        }
+        Err(Error::message(format!(
+            "Expected definite map, got indefinite map",
+        )))
+    }
+}
+
 fn expect_u8(d: &mut Decoder, ctx: &mut C) -> Result<u8, Error> {
     if let Ok(value) = d.probe().u8() {
         if let Some(E::Definite(n)) = ctx.pop() {
@@ -331,6 +380,55 @@ fn expect_u8(d: &mut Decoder, ctx: &mut C) -> Result<u8, Error> {
         Ok(value)
     } else {
         Err(Error::message("Expected u8"))
+    }
+}
+
+fn expect_u64(d: &mut Decoder, ctx: &mut C) -> Result<u64, Error> {
+    if let Ok(value) = d.probe().int() {
+        if let Some(E::Definite(n)) = ctx.pop() {
+            if n > 1 {
+                ctx.push(E::Definite(n - 1));
+            }
+        }
+        let _ = d.int()?;
+        Ok(u64::try_from(value).map_err(|e| Error::message(e.to_string()))?)
+    } else {
+        Err(Error::message("Expected u8"))
+    }
+}
+
+fn decode_conway_value(
+    d: &mut Decoder,
+    ctx: &mut C,
+) -> Result<pallas_primitives::conway::Value, Error> {
+    use pallas_primitives::conway::Value;
+    if let Ok(dt) = d.datatype() {
+        match dt {
+            minicbor::data::Type::U8
+            | minicbor::data::Type::U16
+            | minicbor::data::Type::U32
+            | minicbor::data::Type::U64 => {
+                if let Some(E::Definite(n)) = ctx.pop() {
+                    if n > 1 {
+                        ctx.push(E::Definite(n - 1));
+                    }
+                }
+                Ok(Value::Coin(d.decode_with(ctx)?))
+            }
+            minicbor::data::Type::Array => {
+                expect_definite_array(vec![2], d, ctx)?;
+                let coin = expect_u64(d, ctx)?;
+                let multiasset = d.decode_with(ctx)?;
+                Ok(pallas_primitives::conway::Value::Multiasset(
+                    coin, multiasset,
+                ))
+            }
+            _ => Err(minicbor::decode::Error::message(
+                "unknown cbor data type for Alonzo Value enum",
+            )),
+        }
+    } else {
+        Err(Error::message("msg"))
     }
 }
 
@@ -498,8 +596,18 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_whole_response() {
+    fn test_decode_splash_bot_example() {
         let hex_str = "82028182059f820082018207830000000100028200820282018207820181820382018258200faddf00919ef15d38ac07684199e69be95a003a15f757bf77701072b050c1f500820082028201830500821a06760d80a1581cfd10da3e6a578708c877e14b6aaeda8dc3a36f666a346eec52a30b3aa14974657374746f6b656e1a0001fbd08200820282018200838258200faddf00919ef15d38ac07684199e69be95a003a15f757bf77701072b050c1f5008258205f85cf7db4713466bc8d9d32a84b5b6bfd2f34a76b5f8cf5a5cb04b4d6d6f0380082582096eb39b8d909373c8275c611fae63792f5e3d0a67c1eee5b3afb91fdcddc859100ff";
+        let bytes = hex::decode(hex_str).unwrap();
+
+        let mut decoder = Decoder::new(&bytes);
+        let a = TxApplyErrors::decode(&mut decoder, &mut vec![]).unwrap();
+        dbg!(a);
+    }
+
+    #[test]
+    fn test_decode_splash_dao_example() {
+        let hex_str = "82028182059f820082018200820281581cfdaaeb99e53be5f626fb210239ece94127401d7f395a097d0a5d18ef82008201820783000001000300820082018200820181581c28c58c07ecd2012c6c683b44ce9691ea9b0fdb9b868125a2ac29382382008201820581581c0bbd6545f014f95a65b9df462088c6600d9b2bb6cee3fe20b53241ea820082028201820782018182038201825820e54d54359cd0da7b5ee800c3c83b3f108894d4ef76bde10df66f87c429600e88018200820282018305821a002dc6c0a2581cadf2425c138138efce80fd0b2ed8f227caf052f9ec44b8a92e942dfaa14653504c4153481b00001d1a94a20000581cfdaaeb99e53be5f626fb210239ece94127401d7f395a097d0a5d18efa15820378d0caaaa3855f1b38693c1d6ef004fd118691c95c959d4efa950d6d6fcf7c101821a00765cada1581cadf2425c138138efce80fd0b2ed8f227caf052f9ec44b8a92e942dfaa14653504c4153481b00001d1a94a20000820082028201820081825820e54d54359cd0da7b5ee800c3c83b3f108894d4ef76bde10df66f87c429600e880182018201a1581de028c58c07ecd2012c6c683b44ce9691ea9b0fdb9b868125a2ac29382300ff";
         let bytes = hex::decode(hex_str).unwrap();
 
         let mut decoder = Decoder::new(&bytes);
