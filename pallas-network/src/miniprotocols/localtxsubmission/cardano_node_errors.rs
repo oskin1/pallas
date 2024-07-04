@@ -6,6 +6,7 @@ use pallas_codec::minicbor::{
     decode::{Error, Token},
     Decode, Decoder,
 };
+use pallas_primitives::conway::ScriptHash;
 use pallas_utxorpc::TxHash;
 
 type C = Vec<E>;
@@ -34,7 +35,6 @@ impl Decode<'_, C> for TxApplyErrors {
                     while d.datatype().is_ok() {
                         if let Ok(err) = ShelleyLedgerPredFailure::decode(d, ctx) {
                             ctx.clear();
-                            dbg!(&err);
                             non_script_errors.push(err);
                         }
                     }
@@ -100,7 +100,7 @@ impl Decode<'_, C> for ShelleyLedgerPredFailure {
 
 #[derive(Debug)]
 pub enum BabbageUtxowPredFailure {
-    AlonzoInBabbageUtxowPredFailure,
+    AlonzoInBabbageUtxowPredFailure(AlonzoUtxowPredFailure),
     UtxoFailure(BabbageUtxoPredFailure),
     MalformedScriptWitnesses,
     MalformedReferenceScripts,
@@ -111,6 +111,12 @@ impl Decode<'_, C> for BabbageUtxowPredFailure {
         expect_definite_array(vec![2], d, ctx)?;
         if let Ok(tag) = expect_u8(d, ctx) {
             match tag {
+                1 => {
+                    let utxo_failure = AlonzoUtxowPredFailure::decode(d, ctx)?;
+                    Ok(BabbageUtxowPredFailure::AlonzoInBabbageUtxowPredFailure(
+                        utxo_failure,
+                    ))
+                }
                 2 => {
                     let utxo_failure = BabbageUtxoPredFailure::decode(d, ctx)?;
                     Ok(BabbageUtxowPredFailure::UtxoFailure(utxo_failure))
@@ -224,17 +230,98 @@ impl Decode<'_, C> for AlonzoUtxoPredFailure {
     }
 }
 
+#[derive(Debug)]
 pub enum AlonzoUtxowPredFailure {
     ShelleyInAlonzoUtxowPredfailure(ShelleyUtxowPredFailure),
+    MissingRedeemers,
     MissingRequiredDatums,
     NotAllowedSupplementalDatums,
     PPViewHashesDontMatch,
-    MissingRequiredSigners,
+    MissingRequiredSigners(Vec<pallas_crypto::hash::Hash<28>>),
     UnspendableUtxoNoDatumHash,
     ExtraRedeemers,
 }
 
-pub enum ShelleyUtxowPredFailure {}
+impl Decode<'_, C> for AlonzoUtxowPredFailure {
+    fn decode(d: &mut Decoder, ctx: &mut C) -> Result<Self, Error> {
+        expect_definite_array(vec![2], d, ctx)?;
+        if let Ok(tag) = expect_u8(d, ctx) {
+            match tag {
+                0 => {
+                    let shelley_utxow_failure = ShelleyUtxowPredFailure::decode(d, ctx)?;
+                    Ok(AlonzoUtxowPredFailure::ShelleyInAlonzoUtxowPredfailure(
+                        shelley_utxow_failure,
+                    ))
+                }
+                5 => {
+                    // MissingRequiredSigners
+                    let signers: Result<Vec<_>, _> = d.array_iter()?.collect();
+                    let signers = signers?;
+                    Ok(AlonzoUtxowPredFailure::MissingRequiredSigners(signers))
+                }
+                //7 => {
+                //    // ExtraRedeemers
+                //}
+                _ => Err(Error::message(format!(
+                    "AlonzoUtxowPredFailure unhandled tag {}",
+                    tag
+                ))),
+            }
+        } else {
+            add_collection_token_to_context(d, ctx)?;
+            Err(Error::message(
+                "AlonzoUtxoPredwFailure::decode: expected tag",
+            ))
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum ShelleyUtxowPredFailure {
+    InvalidWitnessesUTXOW,
+    /// Witnesses which failed in verifiedWits function
+    MissingVKeyWitnessesUTXOW(Vec<pallas_crypto::hash::Hash<28>>),
+    MissingScriptWitnessesUTXOW(Vec<ScriptHash>),
+    ScriptWitnessNotValidatingUTXOW(Vec<ScriptHash>),
+    UtxoFailure,
+    MIRInsufficientGenesisSigsUTXOW,
+    MissingTxBodyMetadataHash,
+    MissingTxMetadata,
+    ConflictingMetadataHash,
+    InvalidMetadata,
+    ExtraneousScriptWitnessesUTXOW(Vec<ScriptHash>),
+}
+
+impl Decode<'_, C> for ShelleyUtxowPredFailure {
+    fn decode(d: &mut Decoder, ctx: &mut C) -> Result<Self, Error> {
+        expect_definite_array(vec![2], d, ctx)?;
+        if let Ok(tag) = expect_u8(d, ctx) {
+            match tag {
+                2 => {
+                    let missing_script_witnesses: Result<Vec<_>, _> = d.array_iter()?.collect();
+                    let missing_script_witnesses = missing_script_witnesses?;
+                    Ok(ShelleyUtxowPredFailure::MissingScriptWitnessesUTXOW(
+                        missing_script_witnesses,
+                    ))
+                }
+                1 => {
+                    // MissingVKeyWitnessesUTXOW
+                    let missing_vkey_witnesses: Result<Vec<_>, _> = d.array_iter()?.collect();
+                    let missing_vkey_witnesses = missing_vkey_witnesses?;
+                    Ok(ShelleyUtxowPredFailure::MissingVKeyWitnessesUTXOW(
+                        missing_vkey_witnesses,
+                    ))
+                }
+                _ => Err(Error::message("not BabbageUtxoPredFailure")),
+            }
+        } else {
+            add_collection_token_to_context(d, ctx)?;
+            Err(Error::message(
+                "BabbageUtxoPredFailure::decode: expected tag",
+            ))
+        }
+    }
+}
 
 #[derive(Debug)]
 struct TxInput {
@@ -302,7 +389,7 @@ fn expect_definite_array(
         }
         ctx.push(E::Definite(len));
         let _ = d.array()?;
-        if possible_lengths.contains(&len) {
+        if possible_lengths.is_empty() || possible_lengths.contains(&len) {
             Ok(len)
         } else {
             Err(Error::message(format!(
