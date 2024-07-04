@@ -1,7 +1,7 @@
 use pallas_codec::minicbor::data::Tag;
 use pallas_codec::minicbor::{decode, encode, Decode, Decoder, Encode, Encoder};
 
-use crate::miniprotocols::localtxsubmission::{EraTx, Message, RejectReason};
+use crate::miniprotocols::localtxsubmission::{EraTx, Message, RejectReasonBytes};
 
 impl<Tx, Reject> Encode<()> for Message<Tx, Reject>
 where
@@ -91,14 +91,14 @@ impl Encode<()> for EraTx {
     }
 }
 
-impl<'b> Decode<'b, ()> for RejectReason {
+impl<'b> Decode<'b, ()> for RejectReasonBytes {
     fn decode(d: &mut Decoder<'b>, _ctx: &mut ()) -> Result<Self, decode::Error> {
         let remainder = d.input().to_vec();
-        Ok(RejectReason(remainder))
+        Ok(RejectReasonBytes(remainder))
     }
 }
 
-impl Encode<()> for RejectReason {
+impl Encode<()> for RejectReasonBytes {
     fn encode<W: encode::Write>(
         &self,
         e: &mut Encoder<W>,
@@ -115,13 +115,13 @@ impl Encode<()> for RejectReason {
 mod tests {
     use pallas_codec::{minicbor, Fragment};
 
-    use crate::miniprotocols::localtxsubmission::{EraTx, Message, RejectReason};
+    use crate::miniprotocols::localtxsubmission::{EraTx, Message, RejectReasonBytes};
     use crate::multiplexer::Error;
 
     #[test]
     fn decode_reject_message() {
         let mut bytes = hex::decode(RAW_REJECT_RESPONSE).unwrap();
-        let msg_res = try_decode_message::<Message<EraTx, RejectReason>>(&mut bytes);
+        let msg_res = try_decode_message::<Message<EraTx, RejectReasonBytes>>(&mut bytes);
         assert!(msg_res.is_ok())
     }
 

@@ -1,9 +1,13 @@
-use pallas_codec::minicbor::{
-    decode::{Error, Token, Tokenizer},
-    Decoder,
-};
+use pallas_codec::minicbor::{Decode, Decoder};
+use pallas_crypto::hash::Hash;
+use pallas_primitives::conway::Value;
 
-use crate::miniprotocols::localstate::queries_v16::UTxO;
+use crate::miniprotocols::localtxsubmission::cardano_node_errors::TxApplyErrors;
+
+use super::cardano_node_errors::{
+    AlonzoUtxoPredFailure, AlonzoUtxowPredFailure, BabbageUtxoPredFailure, BabbageUtxowPredFailure,
+    ShelleyLedgerPredFailure, ShelleyUtxowPredFailure, TxInput,
+};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum State {
@@ -26,107 +30,127 @@ pub struct EraTx(pub u16, pub Vec<u8>);
 
 // Raw reject reason.
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct RejectReason(pub Vec<u8>);
+pub struct RejectReasonBytes(pub Vec<u8>);
 
-#[repr(u8)]
-pub enum UtxoFailure {
-    BadInputsUtxo(Vec<UTxO>),
+pub struct TxRejectionReasons(Vec<RejectReason>);
+
+impl TryFrom<RejectReasonBytes> for TxRejectionReasons {
+    type Error = pallas_codec::minicbor::decode::Error;
+
+    fn try_from(
+        RejectReasonBytes(raw_rejection_bytes): RejectReasonBytes,
+    ) -> Result<Self, Self::Error> {
+        let mut decoder = Decoder::new(&raw_rejection_bytes);
+        let node_errors = TxApplyErrors::decode(&mut decoder, &mut vec![])?;
+
+        let reasons: Vec<_> = node_errors
+            .non_script_errors
+            .into_iter()
+            .map(RejectReason::from)
+            .collect();
+        Ok(TxRejectionReasons(reasons))
+    }
+}
+
+pub enum RejectReason {
+    /// Missing/bad TX inputs
+    BadInputsUtxo(Vec<TxInput>),
+    ValueNotConserved {
+        consumed: Value,
+        produced: Value,
+    },
+    MissingVKeyWitnesses(Vec<Hash<28>>),
+    MissingScriptWitnesses(Vec<Hash<28>>),
     /// A generic error that cannot be clearly identified.
     Unknown(String),
 }
 
-pub fn process_reasons(
-    RejectReason(raw_rejection_bytes): RejectReason,
-) -> Result<Vec<UtxoFailure>, Error> {
-    let mut reasons = vec![];
-    let res: Result<Vec<Token>, Error> = Tokenizer::new(&raw_rejection_bytes).collect();
-    match res {
-        Ok(tokens) => {
-            //
-            Ok(reasons)
-        }
-        Err(e) => Err(e),
-    }
-}
-
-fn process_single_reason<'a, T: Iterator<Item = Token<'a>>>(
-    mut tokens: T,
-) -> (Option<UtxoFailure>, T) {
-    let t = tokens.next().unwrap();
-
-    enum E {
-        Definite(u64),
-        Indefinite,
-    }
-
-    match t {
-        Token::Break => (None, tokens),
-        Token::Array(n) => {
-            let mut stack = vec![E::Definite(n)];
-            let mut subsequence = vec![Token::Array(n)];
-
-            'outer: while let Some(remaining) = stack.pop() {
-                match remaining {
-                    E::Definite(elements_remaining) => {
-                        let mut elements_remaining = elements_remaining;
-                        while elements_remaining > 0 {
-                            let t = tokens.next().unwrap();
-                            subsequence.push(t);
-                            match t {
-                                Token::Array(n) => {
-                                    stack.push(E::Definite(n));
-                                    continue 'outer;
+impl From<ShelleyLedgerPredFailure> for RejectReason {
+    fn from(value: ShelleyLedgerPredFailure) -> Self {
+        match value {
+            ShelleyLedgerPredFailure::UtxowFailure(babbage_failure) => match babbage_failure {
+                BabbageUtxowPredFailure::AlonzoInBabbageUtxowPredFailure(alonzo_fail) => {
+                    match alonzo_fail {
+                        AlonzoUtxowPredFailure::ShelleyInAlonzoUtxowPredfailure(shelley_fail) => {
+                            match shelley_fail {
+                                ShelleyUtxowPredFailure::MissingVKeyWitnessesUTXOW(m) => {
+                                    RejectReason::MissingVKeyWitnesses(m)
                                 }
-                                Token::Map(n) => {
-                                    // 2*n because there are n key-value pairs.
-                                    stack.push(E::Definite(2 * n));
-                                    continue 'outer;
+                                ShelleyUtxowPredFailure::MissingScriptWitnessesUTXOW(m) => {
+                                    RejectReason::MissingScriptWitnesses(m)
                                 }
-                                Token::BeginArray
-                                | Token::BeginBytes
-                                | Token::BeginMap
-                                | Token::BeginString => {
-                                    stack.push(E::Indefinite);
-                                    continue 'outer;
+                                ShelleyUtxowPredFailure::InvalidWitnessesUTXOW => unimplemented!(),
+                                ShelleyUtxowPredFailure::ScriptWitnessNotValidatingUTXOW(_) => {
+                                    unimplemented!()
                                 }
-                                _ => (),
-                            }
-                            elements_remaining -= 1;
-                        }
-                    }
-                    E::Indefinite => {
-                        while let Some(t) = tokens.next() {
-                            subsequence.push(t);
-                            match t {
-                                Token::Break => continue 'outer,
-                                Token::Array(n) => {
-                                    stack.push(E::Definite(n));
-                                    continue 'outer;
+                                ShelleyUtxowPredFailure::UtxoFailure => unimplemented!(),
+                                ShelleyUtxowPredFailure::MIRInsufficientGenesisSigsUTXOW => {
+                                    unimplemented!()
                                 }
-                                Token::Map(n) => {
-                                    // 2*n because there are n key-value pairs.
-                                    stack.push(E::Definite(2 * n));
-                                    continue 'outer;
+                                ShelleyUtxowPredFailure::MissingTxBodyMetadataHash => {
+                                    unimplemented!()
                                 }
-                                Token::BeginArray
-                                | Token::BeginBytes
-                                | Token::BeginMap
-                                | Token::BeginString => {
-                                    stack.push(E::Indefinite);
-                                    continue 'outer;
+                                ShelleyUtxowPredFailure::MissingTxMetadata => unimplemented!(),
+                                ShelleyUtxowPredFailure::ConflictingMetadataHash => {
+                                    unimplemented!()
                                 }
-                                _ => (),
+                                ShelleyUtxowPredFailure::InvalidMetadata => unimplemented!(),
+                                ShelleyUtxowPredFailure::ExtraneousScriptWitnessesUTXOW(_) => {
+                                    unimplemented!()
+                                }
                             }
                         }
+                        AlonzoUtxowPredFailure::MissingRedeemers => unimplemented!(),
+                        AlonzoUtxowPredFailure::MissingRequiredDatums => unimplemented!(),
+                        AlonzoUtxowPredFailure::NotAllowedSupplementalDatums => unimplemented!(),
+                        AlonzoUtxowPredFailure::PPViewHashesDontMatch => unimplemented!(),
+                        AlonzoUtxowPredFailure::MissingRequiredSigners(_) => unimplemented!(),
+                        AlonzoUtxowPredFailure::UnspendableUtxoNoDatumHash => unimplemented!(),
+                        AlonzoUtxowPredFailure::ExtraRedeemers => unimplemented!(),
                     }
                 }
-            }
-
-            todo!()
+                BabbageUtxowPredFailure::UtxoFailure(utxo_fail) => match utxo_fail {
+                    BabbageUtxoPredFailure::AlonzoInBabbageUtxoPredFailure(alonzo_fail) => {
+                        match alonzo_fail {
+                            AlonzoUtxoPredFailure::BadInputsUtxo(inputs) => {
+                                RejectReason::BadInputsUtxo(inputs)
+                            }
+                            AlonzoUtxoPredFailure::ValueNotConservedUTxO {
+                                consumed_value,
+                                produced_value,
+                            } => RejectReason::ValueNotConserved {
+                                consumed: consumed_value,
+                                produced: produced_value,
+                            },
+                            AlonzoUtxoPredFailure::OutsideValidityIntervalUTxO => unimplemented!(),
+                            AlonzoUtxoPredFailure::MaxTxSizeUTxO => unimplemented!(),
+                            AlonzoUtxoPredFailure::InputSetEmptyUTxO => unimplemented!(),
+                            AlonzoUtxoPredFailure::FeeTooSmallUTxO => unimplemented!(),
+                            AlonzoUtxoPredFailure::WrongNetwork => unimplemented!(),
+                            AlonzoUtxoPredFailure::WrongNetworkWithdrawal => unimplemented!(),
+                            AlonzoUtxoPredFailure::OutputTooSmallUTxO => unimplemented!(),
+                            AlonzoUtxoPredFailure::UtxosFailure => unimplemented!(),
+                            AlonzoUtxoPredFailure::OutputBootAddrAttrsTooBig => unimplemented!(),
+                            AlonzoUtxoPredFailure::TriesToForgeADA => unimplemented!(),
+                            AlonzoUtxoPredFailure::OutputTooBigUTxO => unimplemented!(),
+                            AlonzoUtxoPredFailure::InsufficientCollateral => unimplemented!(),
+                            AlonzoUtxoPredFailure::ScriptsNotPaidUTxO => unimplemented!(),
+                            AlonzoUtxoPredFailure::ExUnitsTooBigUTxO => unimplemented!(),
+                            AlonzoUtxoPredFailure::CollateralContainsNonADA => unimplemented!(),
+                            AlonzoUtxoPredFailure::WrongNetworkInTxBody => unimplemented!(),
+                            AlonzoUtxoPredFailure::OutsideForecast => unimplemented!(),
+                            AlonzoUtxoPredFailure::TooManyCollateralInputs => unimplemented!(),
+                            AlonzoUtxoPredFailure::NoCollateralInputs => unimplemented!(),
+                        }
+                    }
+                    BabbageUtxoPredFailure::IncorrectTotalCollateralField => unimplemented!(),
+                    BabbageUtxoPredFailure::BabbageOutputTooSmallUTxO => unimplemented!(),
+                    BabbageUtxoPredFailure::BabbageNonDisjointRefInputs => unimplemented!(),
+                },
+                BabbageUtxowPredFailure::MalformedScriptWitnesses => unimplemented!(),
+                BabbageUtxowPredFailure::MalformedReferenceScripts => unimplemented!(),
+            },
+            ShelleyLedgerPredFailure::DelegsFailure => unimplemented!(),
         }
-        _ => unreachable!(),
     }
 }
-
-#[cfg(test)]
-mod tests {}

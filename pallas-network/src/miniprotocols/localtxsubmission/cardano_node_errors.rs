@@ -9,11 +9,13 @@ use pallas_codec::minicbor::{
 use pallas_primitives::conway::ScriptHash;
 use pallas_utxorpc::TxHash;
 
-type C = Vec<E>;
+/// When decoding the error responses of the node, we use the following stack to track the location
+/// of the decoding relative to an outer scope (most often a definite array).
+type C = Vec<OuterScope>;
 
 #[derive(Debug)]
 pub struct TxApplyErrors {
-    non_script_errors: Vec<ShelleyLedgerPredFailure>,
+    pub non_script_errors: Vec<ShelleyLedgerPredFailure>,
 }
 
 impl Decode<'_, C> for TxApplyErrors {
@@ -80,11 +82,11 @@ impl Decode<'_, C> for ShelleyLedgerPredFailure {
             let t = next_token(d)?;
             match t {
                 Token::BeginArray | Token::BeginBytes | Token::BeginMap => {
-                    ctx.push(E::Indefinite);
+                    ctx.push(OuterScope::Indefinite);
                     clear_unknown_entity(d, ctx)?;
                 }
                 Token::Array(n) | Token::Map(n) => {
-                    ctx.push(E::Definite(n));
+                    ctx.push(OuterScope::Definite(n));
                     clear_unknown_entity(d, ctx)?;
                 }
 
@@ -324,9 +326,9 @@ impl Decode<'_, C> for ShelleyUtxowPredFailure {
 }
 
 #[derive(Debug)]
-struct TxInput {
-    tx_hash: TxHash,
-    index: u64,
+pub struct TxInput {
+    pub tx_hash: TxHash,
+    pub index: u64,
 }
 
 impl Decode<'_, C> for TxInput {
@@ -336,9 +338,9 @@ impl Decode<'_, C> for TxInput {
             let _ = d.bytes()?;
             let tx_hash = TxHash::from(bytes);
             if let Ok(index) = d.probe().int() {
-                if let Some(E::Definite(n)) = ctx.pop() {
+                if let Some(OuterScope::Definite(n)) = ctx.pop() {
                     if n > 1 {
-                        ctx.push(E::Definite(n - 1));
+                        ctx.push(OuterScope::Definite(n - 1));
                     }
                 }
                 let _ = d.int()?;
@@ -355,19 +357,21 @@ impl Decode<'_, C> for TxInput {
     }
 }
 
+/// Process the next CBOR token, adjusting the position if the outer scope is a definite array.
+/// If this token represents a new collection, add new scope to the stack.
 fn add_collection_token_to_context(d: &mut Decoder, ctx: &mut C) -> Result<(), Error> {
     let t = next_token(d)?;
-    if let Some(E::Definite(n)) = ctx.pop() {
+    if let Some(OuterScope::Definite(n)) = ctx.pop() {
         if n > 1 {
-            ctx.push(E::Definite(n - 1));
+            ctx.push(OuterScope::Definite(n - 1));
         }
     }
     match t {
         Token::BeginArray | Token::BeginBytes | Token::BeginMap => {
-            ctx.push(E::Indefinite);
+            ctx.push(OuterScope::Indefinite);
         }
         Token::Array(n) | Token::Map(n) => {
-            ctx.push(E::Definite(n));
+            ctx.push(OuterScope::Definite(n));
         }
 
         // Throw away the token (even break)
@@ -382,12 +386,12 @@ fn expect_definite_array(
     ctx: &mut C,
 ) -> Result<u64, Error> {
     if let Some(len) = d.probe().array()? {
-        if let Some(E::Definite(inner_n)) = ctx.pop() {
+        if let Some(OuterScope::Definite(inner_n)) = ctx.pop() {
             if inner_n > 1 {
-                ctx.push(E::Definite(inner_n - 1));
+                ctx.push(OuterScope::Definite(inner_n - 1));
             }
         }
-        ctx.push(E::Definite(len));
+        ctx.push(OuterScope::Definite(len));
         let _ = d.array()?;
         if possible_lengths.is_empty() || possible_lengths.contains(&len) {
             Ok(len)
@@ -399,17 +403,17 @@ fn expect_definite_array(
         }
     } else {
         let t = next_token(d)?;
-        if let Some(E::Definite(n)) = ctx.pop() {
+        if let Some(OuterScope::Definite(n)) = ctx.pop() {
             if n > 1 {
-                ctx.push(E::Definite(n - 1));
+                ctx.push(OuterScope::Definite(n - 1));
             }
         }
         match t {
             Token::BeginArray | Token::BeginBytes | Token::BeginMap => {
-                ctx.push(E::Indefinite);
+                ctx.push(OuterScope::Indefinite);
             }
             Token::Array(n) | Token::Map(n) => {
-                ctx.push(E::Definite(n));
+                ctx.push(OuterScope::Definite(n));
             }
 
             // Throw away the token (even break)
@@ -422,45 +426,11 @@ fn expect_definite_array(
     }
 }
 
-fn expect_definite_map(d: &mut Decoder, ctx: &mut C) -> Result<u64, Error> {
-    if let Some(len) = d.probe().map()? {
-        if let Some(E::Definite(inner_n)) = ctx.pop() {
-            if inner_n > 1 {
-                ctx.push(E::Definite(inner_n - 1));
-            }
-        }
-        ctx.push(E::Definite(len * 2));
-        let _ = d.map()?;
-        Ok(len)
-    } else {
-        let t = next_token(d)?;
-        if let Some(E::Definite(n)) = ctx.pop() {
-            if n > 1 {
-                ctx.push(E::Definite(n - 1));
-            }
-        }
-        match t {
-            Token::BeginArray | Token::BeginBytes | Token::BeginMap => {
-                ctx.push(E::Indefinite);
-            }
-            Token::Array(n) | Token::Map(n) => {
-                ctx.push(E::Definite(n));
-            }
-
-            // Throw away the token (even break)
-            _ => (),
-        }
-        Err(Error::message(format!(
-            "Expected definite map, got indefinite map",
-        )))
-    }
-}
-
 fn expect_u8(d: &mut Decoder, ctx: &mut C) -> Result<u8, Error> {
     if let Ok(value) = d.probe().u8() {
-        if let Some(E::Definite(n)) = ctx.pop() {
+        if let Some(OuterScope::Definite(n)) = ctx.pop() {
             if n > 1 {
-                ctx.push(E::Definite(n - 1));
+                ctx.push(OuterScope::Definite(n - 1));
             }
         }
         let _ = d.u8()?;
@@ -472,9 +442,9 @@ fn expect_u8(d: &mut Decoder, ctx: &mut C) -> Result<u8, Error> {
 
 fn expect_u64(d: &mut Decoder, ctx: &mut C) -> Result<u64, Error> {
     if let Ok(value) = d.probe().int() {
-        if let Some(E::Definite(n)) = ctx.pop() {
+        if let Some(OuterScope::Definite(n)) = ctx.pop() {
             if n > 1 {
-                ctx.push(E::Definite(n - 1));
+                ctx.push(OuterScope::Definite(n - 1));
             }
         }
         let _ = d.int()?;
@@ -495,9 +465,9 @@ fn decode_conway_value(
             | minicbor::data::Type::U16
             | minicbor::data::Type::U32
             | minicbor::data::Type::U64 => {
-                if let Some(E::Definite(n)) = ctx.pop() {
+                if let Some(OuterScope::Definite(n)) = ctx.pop() {
                     if n > 1 {
-                        ctx.push(E::Definite(n - 1));
+                        ctx.push(OuterScope::Definite(n - 1));
                     }
                 }
                 Ok(Value::Coin(d.decode_with(ctx)?))
@@ -520,36 +490,38 @@ fn decode_conway_value(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum E {
+pub enum OuterScope {
+    /// We are within a definite CBOR collection such as an array or map. The inner `u64` indicates
+    /// the number of elements left to be processed within the collection.
     Definite(u64),
+    /// We are within an indefinite collection.
     Indefinite,
 }
 
-fn clear_unknown_entity(decoder: &mut Decoder, stack: &mut Vec<E>) -> Result<(), Error> {
+fn clear_unknown_entity(decoder: &mut Decoder, stack: &mut Vec<OuterScope>) -> Result<(), Error> {
     while let Some(e) = stack.pop() {
         let t = next_token(decoder)?;
 
         match e {
-            E::Definite(num_left) => {
+            OuterScope::Definite(num_left) => {
                 if num_left > 1 {
-                    stack.push(E::Definite(num_left - 1));
+                    stack.push(OuterScope::Definite(num_left - 1));
                 }
             }
-            E::Indefinite => stack.push(E::Indefinite),
+            OuterScope::Indefinite => stack.push(OuterScope::Indefinite),
         }
 
         match t {
             Token::BeginArray | Token::BeginBytes | Token::BeginMap => {
-                stack.push(E::Indefinite);
+                stack.push(OuterScope::Indefinite);
             }
             Token::Array(n) | Token::Map(n) => {
-                stack.push(E::Definite(n));
+                stack.push(OuterScope::Definite(n));
             }
 
             Token::Break => {
-                dbg!(&stack);
-                assert_eq!(e, E::Indefinite);
-                assert_eq!(stack.pop(), Some(E::Indefinite));
+                assert_eq!(e, OuterScope::Indefinite);
+                assert_eq!(stack.pop(), Some(OuterScope::Indefinite));
             }
 
             // Throw away the token

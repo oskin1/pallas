@@ -1,16 +1,18 @@
 use std::marker::PhantomData;
 
+use log::{trace, warn};
 use thiserror::Error;
 use tracing::debug;
-use log::{trace, warn};
 
 use pallas_codec::Fragment;
 
-use crate::miniprotocols::localtxsubmission::{EraTx, Message, RejectReason, State};
+use crate::miniprotocols::localtxsubmission::{EraTx, Message, State};
 use crate::multiplexer;
 
+use super::TxRejectionReasons;
+
 /// Cardano specific instantiation of LocalTxSubmission client.
-pub type Client = GenericClient<EraTx, RejectReason>;
+pub type Client = GenericClient<EraTx, TxRejectionReasons>;
 
 /// A generic Ouroboros client for submitting a generic transaction
 /// to a server, which possibly results in a generic rejection.
@@ -194,7 +196,7 @@ where
             _ => {
                 warn!(target: "pallas", "Error::InvalidInbound");
                 Err(Error::InvalidInbound)
-            },
+            }
         }
     }
 }
