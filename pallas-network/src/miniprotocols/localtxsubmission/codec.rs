@@ -1,7 +1,9 @@
+use std::fmt::{Debug, Display};
+
 use pallas_codec::minicbor::data::Tag;
 use pallas_codec::minicbor::{decode, encode, Decode, Decoder, Encode, Encoder};
 
-use crate::miniprotocols::localtxsubmission::{EraTx, Message, RejectReasonBytes};
+use crate::miniprotocols::localtxsubmission::{EraTx, Message, RejectReason};
 
 impl<Tx, Reject> Encode<()> for Message<Tx, Reject>
 where
@@ -36,31 +38,90 @@ where
     }
 }
 
-impl<'b, Tx: Decode<'b, ()>, Reject: Decode<'b, ()>> Decode<'b, ()> for Message<Tx, Reject> {
-    fn decode(d: &mut Decoder<'b>, _ctx: &mut ()) -> Result<Self, decode::Error> {
-        if let Err(_) = d.array() {
-            // if the first element isn't an array, it's a plutus error
-            // the node sends string data
-            let rejection = d.decode()?;
-            // skip this data via setting the decoder position, because it doesn't recognize it with rejection decode
-            let _ = d.set_position(d.input().len());
-            return Ok(Message::RejectTx(rejection));
+pub enum DecodingResult<Reject> {
+    Complete(Vec<Reject>),
+    Incomplete(Vec<Reject>),
+}
+
+#[derive(Debug)]
+struct IncompleteDecoding<Reject> {
+    pub processed_reasons: Vec<Reject>,
+}
+
+impl<Reject: Display + Debug> Display for IncompleteDecoding<Reject> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.processed_reasons)
+    }
+}
+
+impl<Reject: Display + Debug> std::error::Error for IncompleteDecoding<Reject> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        None
+    }
+}
+
+impl<Reject> From<Vec<Reject>> for IncompleteDecoding<Reject> {
+    fn from(value: Vec<Reject>) -> Self {
+        IncompleteDecoding {
+            processed_reasons: value,
         }
-        let label = d.u16()?;
-        match label {
-            0 => {
-                let tx = d.decode()?;
-                Ok(Message::SubmitTx(tx))
+    }
+}
+
+/// An implementor of this trait is able to decode an entity from CBOR with bytes that are split
+/// over multiple payloads.
+pub trait DecodeCBORSplitPayload {
+    /// Type of entity to decode
+    type Entity;
+    /// Attempt to decode entity given a new slice of bytes.
+    fn try_decode_with_new_bytes(&mut self, bytes: &[u8]) -> DecodingResult<Self::Entity>;
+    /// Returns true if there still remain CBOR bytes to be decoded.
+    fn has_undecoded_bytes(&self) -> bool;
+}
+
+impl<'b, C, Tx: Decode<'b, ()>, Reject> Decode<'b, C> for Message<Tx, Reject>
+where
+    C: DecodeCBORSplitPayload<Entity = Reject>,
+    Reject: Debug + Display + Send + Sync + 'static,
+{
+    fn decode(d: &mut Decoder<'b>, ctx: &mut C) -> Result<Self, decode::Error> {
+        if ctx.has_undecoded_bytes() {
+            let s = ctx.try_decode_with_new_bytes(d.input());
+            match s {
+                DecodingResult::Complete(reasons) => Ok(Message::RejectTx(reasons)),
+                DecodingResult::Incomplete(reasons) => {
+                    Err(decode::Error::custom(IncompleteDecoding::from(reasons)))
+                }
             }
-            1 => Ok(Message::AcceptTx),
-            2 => {
-                let rejection = d.decode()?;
-                // skip this data via setting the decoder position, because it doesn't recognize it with rejection decode
-                let _ = d.set_position(d.input().len());
-                Ok(Message::RejectTx(rejection))
+        } else {
+            let mut probe = d.probe();
+            if probe.array().is_err() {
+                // If we don't have any unprocessed bytes the first element should be an array
+                return Err(decode::Error::message(
+                    "Expecting an array (no unprocessed bytes)",
+                ));
             }
-            3 => Ok(Message::Done),
-            _ => Err(decode::Error::message("can't decode Message")),
+            let label = probe.u16()?;
+            match label {
+                0 => {
+                    d.array()?;
+                    d.u16()?;
+                    let tx = d.decode()?;
+                    Ok(Message::SubmitTx(tx))
+                }
+                1 => Ok(Message::AcceptTx),
+                2 => {
+                    let s = ctx.try_decode_with_new_bytes(d.input());
+                    match s {
+                        DecodingResult::Complete(reasons) => Ok(Message::RejectTx(reasons)),
+                        DecodingResult::Incomplete(reasons) => {
+                            Err(decode::Error::custom(IncompleteDecoding::from(reasons)))
+                        }
+                    }
+                }
+                3 => Ok(Message::Done),
+                _ => Err(decode::Error::message("can't decode Message")),
+            }
         }
     }
 }
@@ -91,14 +152,14 @@ impl Encode<()> for EraTx {
     }
 }
 
-impl<'b> Decode<'b, ()> for RejectReasonBytes {
+impl<'b> Decode<'b, ()> for RejectReason {
     fn decode(d: &mut Decoder<'b>, _ctx: &mut ()) -> Result<Self, decode::Error> {
         let remainder = d.input().to_vec();
-        Ok(RejectReasonBytes(remainder))
+        Ok(RejectReason(remainder))
     }
 }
 
-impl Encode<()> for RejectReasonBytes {
+impl Encode<()> for RejectReason {
     fn encode<W: encode::Write>(
         &self,
         e: &mut Encoder<W>,
@@ -113,33 +174,40 @@ impl Encode<()> for RejectReasonBytes {
 
 #[cfg(test)]
 mod tests {
+    use pallas_codec::minicbor::Decode;
     use pallas_codec::{minicbor, Fragment};
 
-    use crate::miniprotocols::localtxsubmission::{EraTx, Message, RejectReasonBytes};
+    use crate::miniprotocols::localtxsubmission::{EraTx, Message, RejectReason};
     use crate::multiplexer::Error;
+
+    use super::{DecodeCBORSplitPayload, DecodingResult};
 
     #[test]
     fn decode_reject_message() {
-        let mut bytes = hex::decode(RAW_REJECT_RESPONSE).unwrap();
-        let msg_res = try_decode_message::<Message<EraTx, RejectReasonBytes>>(&mut bytes);
-        assert!(msg_res.is_ok())
+        let bytes = hex::decode(RAW_REJECT_RESPONSE).unwrap();
+        let mut decoder = minicbor::Decoder::new(&bytes);
+        let maybe_msg: Message<EraTx, RejectReason> =
+            decoder.decode_with(&mut CBORDecoder).unwrap();
+        // let msg_res = try_decode_message::<Message<EraTx, RejectReason>>(&mut bytes);
+        // assert!(msg_res.is_ok())
     }
 
-    fn try_decode_message<M>(buffer: &mut Vec<u8>) -> Result<Option<M>, Error>
-    where
-        M: Fragment,
-    {
-        let mut decoder = minicbor::Decoder::new(buffer);
-        let maybe_msg = decoder.decode();
+    struct CBORDecoder;
 
-        match maybe_msg {
-            Ok(msg) => {
-                let pos = decoder.position();
-                buffer.drain(0..pos);
-                Ok(Some(msg))
+    impl DecodeCBORSplitPayload for CBORDecoder {
+        type Entity = RejectReason;
+
+        fn try_decode_with_new_bytes(&mut self, bytes: &[u8]) -> DecodingResult<Self::Entity> {
+            let mut decoder = minicbor::Decoder::new(bytes);
+            let reason = RejectReason::decode(&mut decoder, &mut ());
+            match reason {
+                Ok(reason) => DecodingResult::Complete(vec![reason]),
+                Err(e) => DecodingResult::Incomplete(vec![]),
             }
-            Err(err) if err.is_end_of_input() => Ok(None),
-            Err(err) => Err(Error::Decoding(err.to_string())),
+        }
+
+        fn has_undecoded_bytes(&self) -> bool {
+            false
         }
     }
 
