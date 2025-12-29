@@ -65,9 +65,9 @@ impl Client {
 
     fn assert_outbound_state(&self, msg: &Message) -> Result<(), Error> {
         match (&self.0, msg) {
-            (State::Idle, Message::Acquire) => Ok(()),
+            (State::Idle, Message::Acquire | Message::AwaitAcquire) => Ok(()),
             (State::Idle, Message::Done) => Ok(()),
-            (State::Acquired, Message::Acquire) => Ok(()),
+            (State::Acquired, Message::Acquire | Message::AwaitAcquire) => Ok(()),
             (State::Acquired, Message::RequestHasTx(..)) => Ok(()),
             (State::Acquired, Message::RequestNextTx) => Ok(()),
             (State::Acquired, Message::RequestSizeAndCapacity) => Ok(()),
@@ -109,6 +109,14 @@ impl Client {
         Ok(())
     }
 
+    async fn send_await_acquire(&mut self) -> Result<(), Error> {
+        let msg = Message::AwaitAcquire;
+        self.send_message(&msg).await?;
+        self.0 = State::Acquiring;
+
+        Ok(())
+    }
+
     async fn recv_while_acquiring(&mut self) -> Result<Slot, Error> {
         match self.recv_message().await? {
             Message::Acquired(slot) => {
@@ -121,6 +129,11 @@ impl Client {
 
     pub async fn acquire(&mut self) -> Result<Slot, Error> {
         self.send_acquire().await?;
+        self.recv_while_acquiring().await
+    }
+
+    pub async fn await_acquire(&mut self) -> Result<Slot, Error> {
+        self.send_await_acquire().await?;
         self.recv_while_acquiring().await
     }
 
